@@ -26,6 +26,8 @@ int pause(int);
 int uptime(void);
 int sync(void);
 int trace(int);
+struct pinfo;
+int getpinfo(struct pinfo *buf, int max);
 struct sysinfo;
 int sysinfo(struct sysinfo *);
 

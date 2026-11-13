@@ -105,11 +105,13 @@ extern uint64 sys_close(void);
 extern uint64 sys_sync(void);
 extern uint64 sys_sysinfo(void);
 extern uint64 sys_trace(void);
+extern uint64 sys_getpinfo(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
 static uint64 (*syscalls[])(void) = {
   // clang-format off
+  [SYS_getpinfo] = sys_getpinfo,
   [SYS_fork]    = sys_fork,
   [SYS_exit]    = sys_exit,
   [SYS_wait]    = sys_wait,
@@ -139,6 +141,7 @@ static uint64 (*syscalls[])(void) = {
 
 
 static char *syscall_names[] = {
+  [SYS_getpinfo] = "getpinfo",
   [SYS_fork] = "fork",
   [SYS_exit] = "exit",
   [SYS_wait] = "wait",

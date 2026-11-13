@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "pinfo.h"
 
 struct cpu cpus[NCPU];
 
@@ -138,8 +139,17 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
-p->trace_mask = 0;
+  p->trace_mask = 0;
   p->state = USED;
+
+  // Initialize scheduling statistics
+  p->runticks = 0;
+  p->nsched = 0;
+  p->ctime = ticks;
+
+  // Initialize MLFQ fields
+  p->level = 0;
+  p->usedticks = 0;
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -183,6 +193,16 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+
+  // Reset scheduling statistics
+  p->runticks = 0;
+  p->nsched = 0;
+  p->ctime = 0;
+
+  // Reset MLFQ fields
+  p->level = 0;
+  p->usedticks = 0;
+
   p->state = UNUSED;
 }
 
@@ -448,42 +468,47 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+  static int cursor[NCPU][4];
+  int cpu_id = cpuid();
 
   c->proc = 0;
+
   for (;;) {
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
     intr_on();
     intr_off();
 
     int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
 
-        // Don't re-enable interrupts on release.
-        mycpu()->intena = 0;
+    for (int level = 0; level < 4 && !found; level++) {
+      for (int i = 0; i < NPROC; i++) {
+        int index = (cursor[cpu_id][level] + i) % NPROC;
+        p = &proc[index];
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+        acquire(&p->lock);
+
+        if (p->state == RUNNABLE && p->level == level) {
+          cursor[cpu_id][level] = (index + 1) % NPROC;
+
+          p->state = RUNNING;
+          p->nsched++;
+          c->proc = p;
+
+          swtch(&c->context, &p->context);
+
+          mycpu()->intena = 0;
+          c->proc = 0;
+          found = 1;
+        }
+
+        release(&p->lock);
+
+        if (found)
+          break;
       }
-      release(&p->lock);
     }
-    if (found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
+
+    if (!found)
       asm volatile("wfi");
-    }
   }
 }
 
@@ -734,4 +759,60 @@ countprocs(void)
   }
 
   return count;
+}
+
+int
+getpinfo(uint64 addr, int max)
+{
+  struct proc *p;
+  struct pinfo info;
+  int count = 0;
+
+  if(max < 0)
+    return -1;
+
+  for(p = proc; p < &proc[NPROC] && count < max; p++){
+    acquire(&p->lock);
+
+    if(p->state != UNUSED){
+      info.pid = p->pid;
+      info.state = p->state;
+      info.level = p->level;
+      info.runticks = p->runticks;
+      info.nsched = p->nsched;
+      info.ctime = p->ctime;
+      safestrcpy(info.name, p->name, sizeof(info.name));
+
+      release(&p->lock);
+
+      if(copyout(myproc()->pagetable,
+           1,
+           addr + count * sizeof(info),
+           (char *)&info,
+           sizeof(info)) < 0)
+  return -1;
+
+      count++;
+    } else {
+      release(&p->lock);
+    }
+  }
+
+  return count;
+}
+void
+priorityboost(void)
+{
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+
+    if(p->state != UNUSED){
+      p->level = 0;
+      p->usedticks = 0;
+    }
+
+    release(&p->lock);
+  }
 }
