@@ -108,6 +108,7 @@ int             nproc(void);
 int 		countprocs(void);
 int             getpinfo(uint64, int);
 void            priorityboost(void);
+int             mlfq_tick(struct proc *);
 
 // swtch.S
 void            swtch(struct context*, struct context*);

@@ -60,6 +60,8 @@ proc_mapstacks(pagetable_t kpgtbl)
 }
 
 // initialize the proc table.
+static int mlfq_cursor[4];
+static struct spinlock mlfq_cursor_lock;
 void
 procinit(void)
 {
@@ -67,6 +69,7 @@ procinit(void)
 
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&mlfq_cursor_lock, "mlfq_cursor");
   for (p = proc; p < &proc[NPROC]; p++) {
     initlock(&p->lock, "proc");
     p->state = UNUSED;
@@ -468,8 +471,6 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  static int cursor[NCPU][4];
-  int cpu_id = cpuid();
 
   c->proc = 0;
 
@@ -480,14 +481,22 @@ scheduler(void)
     int found = 0;
 
     for (int level = 0; level < 4 && !found; level++) {
-      for (int i = 0; i < NPROC; i++) {
-        int index = (cursor[cpu_id][level] + i) % NPROC;
+  int start;
+
+  acquire(&mlfq_cursor_lock);
+  start = mlfq_cursor[level];
+  release(&mlfq_cursor_lock);
+
+  for (int i = 0; i < NPROC; i++) {
+    int index = (start + i) % NPROC;
         p = &proc[index];
 
         acquire(&p->lock);
 
         if (p->state == RUNNABLE && p->level == level) {
-          cursor[cpu_id][level] = (index + 1) % NPROC;
+          acquire(&mlfq_cursor_lock);
+          mlfq_cursor[level] = (index + 1) % NPROC;
+          release(&mlfq_cursor_lock);
 
           p->state = RUNNING;
           p->nsched++;
@@ -815,4 +824,51 @@ priorityboost(void)
 
     release(&p->lock);
   }
+}
+// Handle one timer tick for the running process.
+int
+mlfq_tick(struct proc *p)
+{
+  int should_yield = 0;
+
+  acquire(&p->lock);
+
+  p->runticks++;
+  p->usedticks++;
+
+  if (p->usedticks >= (1 << p->level)) {
+    if (p->level < 3)
+      p->level++;
+
+    p->usedticks = 0;
+    should_yield = 1;
+  }
+
+    int current_level = p->level;
+
+  release(&p->lock);
+
+  // Check whether a higher-priority process is ready.
+  if (!should_yield) {
+    struct proc *other;
+
+    for (other = proc; other < &proc[NPROC]; other++) {
+      if (other == p)
+        continue;
+
+      acquire(&other->lock);
+
+      if (other->state == RUNNABLE &&
+          other->level < current_level) {
+        should_yield = 1;
+      }
+
+      release(&other->lock);
+
+      if (should_yield)
+        break;
+    }
+  }
+
+  return should_yield;
 }

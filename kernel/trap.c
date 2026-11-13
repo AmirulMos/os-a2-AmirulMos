@@ -81,23 +81,10 @@ usertrap(void)
   if (killed(p))
     kexit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2) {
-  acquire(&p->lock);
-
-  p->runticks++;
-  p->usedticks++;
-
-  if (p->usedticks >= (1 << p->level)) {
-    if (p->level < 3)
-      p->level++;
-
-    p->usedticks = 0;
-  }
-
-  release(&p->lock);
-
-  yield();
+  // Handle timer interrupt using MLFQ rules.
+if (which_dev == 2) {
+  if (mlfq_tick(p))
+    yield();
 }
 
   prepare_return();
@@ -168,25 +155,10 @@ kerneltrap()
     panic("kerneltrap");
   }
 
-  // Count CPU ticks during kernel execution.
-  if (which_dev == 2 && myproc() != 0) {
-  struct proc *p = myproc();
-
-  acquire(&p->lock);
-
-  p->runticks++;
-  p->usedticks++;
-
-  if (p->usedticks >= (1 << p->level)) {
-    if (p->level < 3)
-      p->level++;
-
-    p->usedticks = 0;
-  }
-
-  release(&p->lock);
-
-  yield();
+  // Handle timer interrupts during kernel execution.
+if (which_dev == 2 && myproc() != 0) {
+  if (mlfq_tick(myproc()))
+    yield();
 }
 
   // Restore trap registers after yield.
@@ -210,9 +182,9 @@ clockintr()
     release(&tickslock);
   }
 
-  if (boost)
-    priorityboost();
-
+  if (boost) {
+  priorityboost();
+}
   w_stimecmp(r_time() + 1000000);
 }
 
